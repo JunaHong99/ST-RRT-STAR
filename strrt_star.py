@@ -37,7 +37,7 @@ class Tree:
                 nearest_node = node
         return nearest_node
 
-    def get_nearest_k(self, config, time, k): #k는 radius, 거리범위가 k 이내인 노드들 조사
+    def get_nearest_k(self, config, time, k): #pruning때만 씀 k는 radius, 거리범위가 k 이내인 노드들 조사
         distances = []
         for node in self.nodes:
             dist = d(node, Node(config, time)) #node가 골 트리의 노드, Node가 x_new
@@ -52,17 +52,14 @@ class Obstacle:
         self.time_bounds = time_bounds    # [t_min, t_max]
 
 
-def interpolate(node1, node2, step_size=0.1):
+def interpolate(node1, node2, step_size=0.05):
     config1 = node1.config
     config2 = node2.config
     time1 = node1.time
     time2 = node2.time
-    # 두 노드 사이의 disance fuction에 따른 거리 계산 (공간+시간 차원 포함)
-    #distance = np.linalg.norm(np.append(config2 - config1, time2 - time1))
     dt = abs(node2.time - node1.time)
     dq = node2.config - node1.config
-    lam = 0.5
-    #distance = np.linalg.norm(np.append(config2 - config1, time2 - time1))
+    lam = 0.2
     distance = lam * np.linalg.norm(dq) + (1-lam) * dt
 
     # 거리와 step_size에 따른 step 개수 계산
@@ -196,6 +193,7 @@ def sample_goal(x_start, X_goal, T_goal, t_max, B):
     return B
 
 def sample_conditionally(x_start, X, B): #본 함수 PTC만큼 실행됨
+    global t_lb_t_ub_reverse_count  # 전역 변수 사용
     while True:
         q = sample_uniform(X[:-1])  # Sample configuration space
         t_min = x_start[-1] + lower_bound_arrival_time(x_start[:-1], q)
@@ -213,7 +211,10 @@ def sample_conditionally(x_start, X, B): #본 함수 PTC만큼 실행됨
             # 충돌 검사: 장애물과 충돌하면 다시 샘플링
             if not any(is_in_obstacle(x_rand, obs) for obs in obstacles):
                 return x_rand
-
+        else: 
+            #t_lb, t_ub 역전 현상 주로 낮은 시간대에서 많이 발생함(old batch 샘플링 시)
+            print(q, t_lb, t_ub)
+            t_lb_t_ub_reverse_count += 1  # 역전 횟수 증가
 def extend(T, x_rand, switch, obstacles):
     if switch == 0: 
         x_nearest = T.get_nearest(x_rand.config, x_rand.time)
@@ -408,26 +409,28 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
 # Constants
-V_MAX = np.array([0.1])  # Maximum velocities for 1-DoF manipulator
+V_MAX = np.array([1])  # Maximum velocities for 1-DoF manipulator
 
+# 역전 횟수를 저장하는 전역 변수
+t_lb_t_ub_reverse_count = 0
 # Main 실행 부분
 if __name__ == "__main__":
     X = np.array([[-np.pi / 2, np.pi / 2]] + [[0, float('inf')]])  # Configuration space + time
     x_start = np.array([0, 0])  # Start configuration + time
-    X_goal = np.array([[0.25, 0.25]])  # Goal configuration + time
+    X_goal = np.array([[1, 1]])  # Goal configuration + time
 
     t_max = float('inf')
     p_goal = 0.1
     P = {
-        'rangeFactor': 2.0,
-        'initialBatchSize': 25,
-        'sampleRatio': 0.5
+        'rangeFactor': 2,      #클수록 tub tlb역전 안 일어남
+        'initialBatchSize': 5, #25보다 5가 좋음
+        'sampleRatio': 0.8     #클수록 새 영역에서 샘플링하고 그래야 역전 안 일어남 
     }
     
     # 장애물 생성 (1차원 구성 공간에 맞게 수정)
     obstacles = [
         Obstacle([[0.1, 0.2]], [0, 20]),
-        Obstacle([[0.1, 0.2]], [25,60])
+        Obstacle([[0.1, 0.2]], [25,30])
     ]
     
     solution, T_a, T_b = st_rrt_star(X, x_start, X_goal, 1000, t_max, p_goal, P, obstacles)
@@ -436,9 +439,11 @@ if __name__ == "__main__":
         print("Solution found!")
         for node in solution:
             print(f"Configuration: {node.config}, Time: {node.time}")
+        print(f"Total t_lb >= t_ub reversals: {t_lb_t_ub_reverse_count}")
         plot_trees_with_obstacles_1d(T_a, T_b, obstacles)  # 1D 시각화 함수 사용
     else:
         print("No solution found, visualizing trees...")
+        print(f"Total t_lb >= t_ub reversals: {t_lb_t_ub_reverse_count}")
         plot_trees_with_obstacles_1d(T_a, T_b, obstacles)
 
 
