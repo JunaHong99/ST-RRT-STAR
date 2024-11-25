@@ -61,7 +61,7 @@ class Obstacle:
         self.time_bounds = time_bounds    # [t_min, t_max]
 
 
-def interpolate(node1, node2, step_size=0.05): #환경마다 적절한 단위길이로 step_size 설정
+def interpolate(node1, node2, step_size=0.01):
     config1 = node1.config
     config2 = node2.config
     time1 = node1.time
@@ -100,80 +100,59 @@ def st_rrt_star(X, x_start, X_goal, PTC, t_max, p_goal, P, obstacles):
     T_b = Tree()
     T_goal = T_b
     start_node = Node(x_start[:-1], x_start[-1])
-    start_node.cost = 0  # 시작 노드의 비용은 0으로 설정
-
-    # Cost 변화율 기반 종료 조건 세팅
-    best_cost = float('inf')  # 초기 최적 비용
-    cost_threshold = 0.1  # Cost 변화율 임계값 (종료 기준)
-    prev_cost = None  # 이전 Cost 저장용
-    no_improvement_iterations = 0  # Cost가 개선되지 않은 반복 횟수
-    max_no_improvement_iterations = 50  # Cost 개선이 없으면 종료
+    start_node.cost = 0 #시작 노드의 비용은 0으로 설정
 
     T_a.add_node(start_node)
     B = initialize_bound_variables(P)
     solution = None
     num = 0
-
+    # switch가 0 이면 Ta가 시작트리, Tb가 골트리. switch가 1이면 Ta가 골트리, Tb가 시작트리
     iteration = 0
 
     while iteration < PTC:
+        #print(iteration)
         switch = num % 2
         B = update_goal_region(B, P, t_max)
-
+        
         if random.random() < p_goal:
-            B = sample_goal(x_start, X_goal, T_goal, t_max, B)
-
+            B = sample_goal(x_start, X_goal, T_goal, t_max, B)  # T_goal로 고정이 맞는 것 같음
+        
         x_rand = sample_conditionally(x_start, X, B)
         ext_result, x_new = extend(T_a, x_rand, switch, obstacles)
 
-        if ext_result == "Advanced":  # Extend 성공
+        if ext_result == "Advanced":  # extend성공한 x_rand가 x_new가 되면서 트리에 추가되어야
             B['samplesInBatch'] += 1
             B['totalSamples'] += 1
-            if switch == 1:
-                rewire_tree(T_goal, x_new, obstacles)  # Goal Tree에서만 Rewire 수행
+            if switch == 1: rewire_tree(T_goal, x_new, obstacles)  #골트리에서만 진행해야돼
 
             connect_result, x_new_copy = connect(T_b, x_new, switch, obstacles)
-            if connect_result == True:  # 두 Tree가 연결 성공
+            if connect_result == True:  # T_a에 연결한 x_rand가 T_b와도 연결되나 확인   
                 new_solution = update_solution(x_new, x_new_copy, T_a, T_b)
-                total_cost = calculate_total_path_cost(new_solution)
-
-                if solution is None or total_cost < best_cost:
+                #new solution이 시간이 더 적게 걸리면 교체함.
+                if solution is None or new_solution[-1].time < solution[-1].time:
                     solution = new_solution
-                    best_cost = total_cost
-                    print(f"Iteration {iteration}: New best cost = {best_cost:.2f}")
-
-                    # Cost 변화율 계산
-                    if prev_cost is not None:
-                        cost_variation = abs((prev_cost - best_cost) / best_cost)
-                        print(f"Cost variation: {cost_variation:.4f}")
-
-                        # Cost 변화율이 임계값보다 작으면 종료 조건 증가
-                        if cost_variation < cost_threshold:
-                            no_improvement_iterations += 1
-                        else:
-                            no_improvement_iterations = 0  # 개선되면 초기화
-                    prev_cost = best_cost
-
-                    # 개선이 없으면 종료
-                    if no_improvement_iterations >= max_no_improvement_iterations:
-                        print(f"No significant cost improvement for {no_improvement_iterations} iterations.")
-                        break
+                    total_cost = calculate_total_path_cost(solution)
+                    print('cost of solution :', total_cost)
+                    #debugging위해서 프루닝 안 하고 솔루션 바로 냄
+                    print('Total iteration until first solution :', iteration)
+                    #break
 
                     t_max = solution[-1].time
+                    print('t_max : ', t_max)
+                    B['batchProbability'] = 1
                     prune_trees(t_max, T_a, T_b)
-
-        # Goal Tree 업데이트
+      
+        #goal tree 업데이트.
         if switch == 0:
             T_goal = T_b
         else:
             T_goal = T_a
-
         num += 1
         iteration += 1
-        T_a, T_b = T_b, T_a  # Swap Trees
+        #Swap
+        T_a, T_b = T_b, T_a
 
     return solution, T_a, T_b
-
 
 def initialize_bound_variables(P):
     return {
@@ -374,6 +353,7 @@ def get_path_to_root(node, T):
 def prune_trees(t_max, T_a, T_b):
     T_a.nodes = [n for n in T_a.nodes if n.time <= t_max]
     T_b.nodes = [n for n in T_b.nodes if n.time <= t_max]
+    print('Pruning!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
 
 
 # Helper 함수들
@@ -421,46 +401,73 @@ def calculate_total_path_cost(path):
         total_cost += d(path[i - 1], path[i])  # 이전 노드와 현재 노드 간 거리
     return total_cost
 
+def optimize_path(solution, obstacles):
+    """
+    주어진 솔루션 경로를 최적화합니다.
+    :param solution: Node들의 리스트로 이루어진 솔루션 경로
+    :param obstacles: 장애물 리스트
+    :return: 최적화된 경로
+    """
+    optimized_path = [solution[0]]  # 시작 노드는 항상 포함
+    current_node = solution[0]
 
-def plot_trees_with_obstacles_1d(T_a, T_b, obstacles, solution=None):
+    for i in range(1, len(solution)):
+        next_node = solution[i]
+
+        # 두 노드 간의 충돌 없는 직선 연결 가능 여부 확인
+        interpolated_points = interpolate(current_node, next_node)
+        collision_free = all(
+            not any(is_in_obstacle(point, obs) for obs in obstacles)
+            for point in interpolated_points
+        )
+
+        if collision_free:
+            # 직선 연결 가능하다면, 현재 노드에서 next_node로 바로 이동
+            continue
+        else:
+            # 연결 불가능하면 현재 노드를 최적화 경로에 추가하고 갱신
+            optimized_path.append(solution[i - 1])
+            current_node = solution[i - 1]
+
+    # 마지막 노드 추가
+    optimized_path.append(solution[-1])
+
+    return optimized_path
+
+
+def plot_trees_with_obstacles_1d(T_a, T_b, obstacles, solution=None, optimized_solution=None):
     fig, ax = plt.subplots()
 
-    # Plot T_a (Start Tree)
-    for node in T_a.nodes:
-        if node.parent is not None:
-            parent = node.parent
-            ax.plot([node.config[0], parent.config[0]],
-                    [node.time, parent.time], color='b', alpha=0.5)  # 파란색으로 시작 트리 표시
+    # Plot T_a and T_b
+    for tree, color in zip([T_a, T_b], ['b', 'r']):
+        for node in tree.nodes:
+            if node.parent:
+                parent = node.parent
+                ax.plot([node.config[0], parent.config[0]],
+                        [node.time, parent.time], color=color, alpha=0.5)
 
-    # Plot T_b (Goal Tree)
-    for node in T_b.nodes:
-        if node.parent is not None:
-            parent = node.parent
-            ax.plot([node.config[0], parent.config[0]],
-                    [node.time, parent.time], color='r', alpha=0.5)  # 빨간색으로 목표 트리 표시
-
-    # Plot Obstacles
-    for obstacle in obstacles:
-        x_min, x_max = obstacle.space_bounds[0]
-        t_min, t_max = obstacle.time_bounds
-
-        # Plotting the obstacle as a shaded area
+    # Plot obstacles
+    for obs in obstacles:
+        x_min, x_max = obs.space_bounds[0]
+        t_min, t_max = obs.time_bounds
         ax.fill_betweenx([t_min, t_max], x_min, x_max, color='gray', alpha=0.8)
 
-    # Plot the final solution path in green
+    # Plot original solution
     if solution:
         for i in range(1, len(solution)):
-            node1 = solution[i - 1]
-            node2 = solution[i]
-            ax.plot([node1.config[0], node2.config[0]],
-                    [node1.time, node2.time], color='g', linewidth=2)  # 초록색으로 표시
+            ax.plot([solution[i - 1].config[0], solution[i].config[0]],
+                    [solution[i - 1].time, solution[i].time], color='green', linewidth=2, linestyle='--')
 
-    # Set labels and title
+    # Plot optimized solution
+    if optimized_solution:
+        for i in range(1, len(optimized_solution)):
+            ax.plot([optimized_solution[i - 1].config[0], optimized_solution[i].config[0]],
+                    [optimized_solution[i - 1].time, optimized_solution[i].time], color='orange', linewidth=3)
+
     ax.set_xlabel('Configuration (1D)')
     ax.set_ylabel('Time')
-    ax.set_title('Start Tree (T_a), Goal Tree (T_b), and Final Solution Path')
-
-    plt.legend(['T_a (Start Tree)', 'T_b (Goal Tree)', 'Obstacles', 'Final Path'], loc='upper left')
+    ax.set_title('Tree, Original Path, and Optimized Path')
+    plt.legend(['T_a (Start Tree)', 'T_b (Goal Tree)', 'Obstacles', 'Original Path', 'Optimized Path'])
     plt.show()
 
 
@@ -483,32 +490,43 @@ if __name__ == "__main__":
     P = {#아래 3가지 파라미터가 클수록 exploration, 작을수록 exploitation
         'rangeFactor': 2,      #클수록 tub tlb역전 안 일어남
         'initialBatchSize': 5, #25보다 5가 좋음
-        'sampleRatio': 0.7     #0.5~0.8 사용. 클수록 새 영역에서 샘플링하고 그래야 역전 안 일어남 
+        'sampleRatio': 0.7     #클수록 새 영역에서 샘플링하고 그래야 역전 안 일어남 
     }
     
     # 장애물 생성 (1차원 구성 공간에 맞게 수정)
     obstacles = [
-        Obstacle([[0.1, 0.2]], [0, 5]),
-        Obstacle([[0.1, 0.2]], [7,11]),
-        Obstacle([[0.1, 0.2]], [15,20]),
-        Obstacle([[0.5, 0.6]], [5,7]),
-        Obstacle([[0.5, 0.6]], [10,12]),
-        Obstacle([[0.5, 0.6]], [14,16]),
+        Obstacle([[0.1, 0.2]], [0, 15]),
+        Obstacle([[0.1, 0.2]], [17,21]),
+        Obstacle([[0.1, 0.2]], [25,30]),
+        Obstacle([[0.5, 0.6]], [15,19]),
+        Obstacle([[0.5, 0.6]], [20,22]),
+        Obstacle([[0.5, 0.6]], [24,26]),
     ]
     
-    solution, T_a, T_b = st_rrt_star(X, x_start, X_goal, 1000, t_max, p_goal, P, obstacles)
+    solution, T_a, T_b = st_rrt_star(X, x_start, X_goal, 300, t_max, p_goal, P, obstacles)
     
     if solution:
         print("Solution found!")
-        for node in solution:
-            print(f"Configuration: {node.config}, Time: {node.time}")
+        #for node in solution:
+        #    print(f"Configuration: {node.config}, Time: {node.time}")
         total_cost = calculate_total_path_cost(solution)
         print(f"Total path cost: {total_cost:.2f}")
         print(f"Total t_lb >= t_ub reversals: {t_lb_t_ub_reverse_count}")
-        plot_trees_with_obstacles_1d(T_a, T_b, obstacles, solution=solution)  # 1D 시각화 함수 사용
+
+        optimized_solution = optimize_path(solution, obstacles)
+
+        # 최적화된 경로의 cost 계산
+        optimized_cost = calculate_total_path_cost(optimized_solution)
+
+        # 결과 출력
+        print("Original cost:", calculate_total_path_cost(solution))
+        print("Optimized cost:", optimized_cost)
+
+
+        plot_trees_with_obstacles_1d(T_a, T_b, obstacles, solution=solution, optimized_solution= optimized_solution)  # 1D 시각화 함수 사용
     else:
         print("No solution found, visualizing trees...")
-        print(f"역전: {t_lb_t_ub_reverse_count}")
+        print(f"Total t_lb >= t_ub reversals: {t_lb_t_ub_reverse_count}")
         plot_trees_with_obstacles_1d(T_a, T_b, obstacles)
 
 
